@@ -805,7 +805,11 @@ fn input_stream_worker(
             }
             PollDescriptorsFlow::XRun => {
                 error_callback(StreamError::BufferUnderrun);
+                // A capture PCM leaves `prepare()` stopped; it is started
+                // again so it goes on filling.
                 if let Err(err) = stream.channel.prepare() {
+                    error_callback(err.into());
+                } else if let Err(err) = stream.channel.start() {
                     error_callback(err.into());
                 }
                 continue;
@@ -937,12 +941,16 @@ fn poll_descriptors_and_prepare_buffer(
 
     let revents = stream.channel.revents(&descriptors[1..])?;
     if revents.contains(alsa::poll::Flags::ERR) {
-        let description = String::from("`alsa::poll()` returned POLLERR");
-        return Err(BackendSpecificError { description });
-    }
-
-    // Check if data is ready for processing (either input or output)
-    if !revents.contains(alsa::poll::Flags::IN) && !revents.contains(alsa::poll::Flags::OUT) {
+        // POLLERR reports an xrun or a suspend, and is reported on every poll
+        // until the PCM is prepared again. A plugin PCM can report it while
+        // its state still reads RUNNING (the PipeWire plugin does), so the
+        // xrun is read from `avail()` below, which answers EPIPE for one and
+        // takes the XRun flow that prepares the PCM. A suspended PCM is
+        // prepared the same way.
+        if matches!(stream.channel.state(), alsa::pcm::State::Suspended) {
+            return Ok(PollDescriptorsFlow::XRun);
+        }
+    } else if !revents.contains(alsa::poll::Flags::IN) && !revents.contains(alsa::poll::Flags::OUT) {
         // Nothing to process, poll again
         return Ok(PollDescriptorsFlow::Continue);
     }
