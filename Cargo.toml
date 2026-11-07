@@ -161,6 +161,7 @@ ndk = { version = "0.9", default-features = false, features = [
     "api-level-26",
 ] }
 ndk-context = "0.1"
+libc = "0.2"
 jni = "0.21"
 num-derive = "0.4"
 num-traits = "0.2"
