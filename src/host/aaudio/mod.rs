@@ -19,7 +19,7 @@ use crate::{
     DeviceDescription, DeviceDescriptionBuilder, DeviceDirection, DeviceId, DeviceIdError,
     DeviceNameError, DeviceType, DevicesError, InputCallbackInfo, InputStreamTimestamp,
     InterfaceType, OutputCallbackInfo, OutputStreamTimestamp, PauseStreamError, PlayStreamError,
-    SampleFormat, StreamConfig, StreamError, SupportedBufferSize, SupportedStreamConfig,
+    SampleFormat, SizedSample, StreamConfig, StreamError, SupportedBufferSize, SupportedStreamConfig,
     SupportedStreamConfigRange, SupportedStreamConfigsError,
 };
 
@@ -536,6 +536,62 @@ impl DeviceTrait for Device {
         D: FnMut(&mut Data, &OutputCallbackInfo) + Send + 'static,
         E: FnMut(StreamError) + Send + 'static,
     {
+        self.build_output_stream_raw_with_performance_mode(
+            config,
+            sample_format,
+            PerformanceMode::None,
+            data_callback,
+            error_callback,
+        )
+    }
+}
+
+impl Device {
+    /// Open an output stream that asks AAudio for `mode`, the way
+    /// [`DeviceTrait::build_output_stream`] opens one with AAudio's default
+    /// ([`PerformanceMode::None`]).
+    ///
+    /// AAudio takes the mode as a request: [`Stream::performance_mode`] states
+    /// the mode the opened stream runs in.
+    pub fn build_output_stream_with_performance_mode<T, D, E>(
+        &self,
+        config: &StreamConfig,
+        mode: PerformanceMode,
+        mut data_callback: D,
+        error_callback: E,
+    ) -> Result<Stream, BuildStreamError>
+    where
+        T: SizedSample,
+        D: FnMut(&mut [T], &OutputCallbackInfo) + Send + 'static,
+        E: FnMut(StreamError) + Send + 'static,
+    {
+        self.build_output_stream_raw_with_performance_mode(
+            config,
+            T::FORMAT,
+            mode,
+            move |data, info| {
+                data_callback(
+                    data.as_slice_mut()
+                        .expect("host supplied incorrect sample type"),
+                    info,
+                )
+            },
+            error_callback,
+        )
+    }
+
+    fn build_output_stream_raw_with_performance_mode<D, E>(
+        &self,
+        config: &StreamConfig,
+        sample_format: SampleFormat,
+        mode: PerformanceMode,
+        data_callback: D,
+        error_callback: E,
+    ) -> Result<Stream, BuildStreamError>
+    where
+        D: FnMut(&mut Data, &OutputCallbackInfo) + Send + 'static,
+        E: FnMut(StreamError) + Send + 'static,
+    {
         let format = match sample_format {
             SampleFormat::I16 => ndk::audio::AudioFormat::PCM_I16,
             SampleFormat::F32 => ndk::audio::AudioFormat::PCM_Float,
@@ -564,7 +620,8 @@ impl DeviceTrait for Device {
         let builder = ndk::audio::AudioStreamBuilder::new()?
             .direction(ndk::audio::AudioDirection::Output)
             .channel_count(channel_count)
-            .format(format);
+            .format(format)
+            .performance_mode(mode.into());
 
         build_output_stream(
             self,
@@ -574,6 +631,51 @@ impl DeviceTrait for Device {
             builder,
             sample_format,
         )
+    }
+}
+
+/// The latency an AAudio stream asks the platform for
+/// (`AAudioStreamBuilder_setPerformanceMode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PerformanceMode {
+    /// AAudio's default: no preference between latency and power.
+    #[default]
+    None,
+    /// Larger buffers, fewer wakeups, more latency.
+    PowerSaving,
+    /// The smallest latency the device offers, on its fast path where it has one.
+    LowLatency,
+}
+
+impl From<PerformanceMode> for ndk::audio::AudioPerformanceMode {
+    fn from(mode: PerformanceMode) -> Self {
+        match mode {
+            PerformanceMode::None => Self::None,
+            PerformanceMode::PowerSaving => Self::PowerSaving,
+            PerformanceMode::LowLatency => Self::LowLatency,
+        }
+    }
+}
+
+impl From<ndk::audio::AudioPerformanceMode> for PerformanceMode {
+    fn from(mode: ndk::audio::AudioPerformanceMode) -> Self {
+        match mode {
+            ndk::audio::AudioPerformanceMode::PowerSaving => Self::PowerSaving,
+            ndk::audio::AudioPerformanceMode::LowLatency => Self::LowLatency,
+            _ => Self::None,
+        }
+    }
+}
+
+impl Stream {
+    /// The performance mode the opened stream runs in, which can differ from
+    /// the one asked for (`AAudioStream_getPerformanceMode`).
+    pub fn performance_mode(&self) -> PerformanceMode {
+        let stream = match self {
+            Self::Input(stream) | Self::Output(stream) => stream,
+        };
+        let mode = stream.lock().unwrap().performance_mode();
+        mode.into()
     }
 }
 
