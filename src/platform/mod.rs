@@ -830,6 +830,11 @@ mod platform_impl {
 mod platform_impl {
     #[cfg_attr(docsrs, doc(cfg(target_os = "android")))]
     pub use crate::host::aaudio::Host as AAudioHost;
+    #[cfg_attr(docsrs, doc(cfg(target_os = "android")))]
+    pub use crate::host::aaudio::{
+        Device as AAudioDevice, PerformanceMode as AAudioPerformanceMode,
+        Stream as AAudioStream,
+    };
     impl_platform_host!(
         AAudio => AAudioHost,
         #[cfg(feature = "custom")] Custom => super::CustomHost
