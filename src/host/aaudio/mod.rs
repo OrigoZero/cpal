@@ -461,15 +461,30 @@ impl DeviceTrait for Device {
         Ok(config)
     }
 
+    /// The heuristics' choice of channels and format, at the rate the device's
+    /// primary output runs at where a configuration of that choice takes it:
+    /// a stream at another rate is resampled and never reaches the
+    /// low-latency path.
     fn default_output_config(&self) -> Result<SupportedStreamConfig, DefaultStreamConfigError> {
         let mut configs: Vec<_> = self.supported_output_configs().unwrap().collect();
         configs.sort_by(|a, b| b.cmp_default_heuristics(a));
-        let config = configs
-            .into_iter()
-            .next()
-            .ok_or(DefaultStreamConfigError::StreamTypeNotSupported)?
-            .with_max_sample_rate();
-        Ok(config)
+        let best = configs
+            .first()
+            .cloned()
+            .ok_or(DefaultStreamConfigError::StreamTypeNotSupported)?;
+        let native = AudioManager::get_output_sample_rate()
+            .ok()
+            .and_then(|rate| u32::try_from(rate).ok());
+        if let Some(rate) = native {
+            if let Some(range) = configs.into_iter().find(|range| {
+                range.channels() == best.channels()
+                    && range.sample_format() == best.sample_format()
+                    && (range.min_sample_rate()..=range.max_sample_rate()).contains(&rate)
+            }) {
+                return Ok(range.with_sample_rate(rate));
+            }
+        }
+        Ok(best.with_max_sample_rate())
     }
 
     fn build_input_stream_raw<D, E>(
